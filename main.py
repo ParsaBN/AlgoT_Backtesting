@@ -7,10 +7,16 @@ from dataclasses import dataclass
 import QuantConnect.Data.UniverseSelection
 # endregion
 
-# @dataclass
-# class Metric:
-#     get: Callable[[FineFundamental], float]
-#     threshold: float
+@dataclass
+class Metric:
+    # get: Callable[[FineFundamental], float]
+    name: str
+    min: float
+    max: float
+
+METRICS = {
+    'price_earnings_ratio': Metric('price_earnings_ratio', 7.5, 20)
+}
     
 # METRICS = {
 #     'price_earnings_ratio': Metric(lambda x: x.ValuationRatios.PERatio, 15)
@@ -60,7 +66,7 @@ class CryingRedRhinoceros(QCAlgorithm):
         # self.stock_metrics: Dict[Symbol, StockMetrics] = {}
 
         self.SetStartDate(2014, 1, 1)
-        self.SetEndDate(2015, 1, 1)
+        self.SetEndDate(2015, 7, 1)
         self.SetCash(50000)
         # self.SetWarmUp(200, Resolution.Daily)
 
@@ -68,11 +74,12 @@ class CryingRedRhinoceros(QCAlgorithm):
 
         self.symbol_data: Dict[Symbol, SymbolData] = {}
         self.selected_securities: List[Security] = []
+        # self.scored_selection: List[(Security, float)] = []
 
         self.UniverseSettings.Resolution = Resolution.Daily
         self.AddUniverse(self.CoarseSelectionFunction, self.FineSelectionFunction)
 
-        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Midnight, self.Rebalance)
+        self.Schedule.On(self.DateRules.MonthStart(0), self.TimeRules.Midnight, self.Rebalance)
 
         # self.are_trackers_initialised = False
         # self.short_sma: Dict[Symbol, SimpleMovingAverage] = {}
@@ -139,13 +146,16 @@ class CryingRedRhinoceros(QCAlgorithm):
         for ff in fine:
             data = self.symbol_data[ff.Symbol]
             should_select = (data.is_ready() and
-                ff.ValuationRatios.PERatio < 20 and
-                ff.AssetClassification.GrowthScore > 0.075 and
+                ff.ValuationRatios.PERatio < 20 and ff.ValuationRatios.PERatio > 7.5 and
+                ff.AssetClassification.GrowthScore > 0.035 and ff.AssetClassification.GrowthScore < 0.1 and # TODO: bit sus
                 data.fast_average.Current.Value > data.slow_average.Current.Value and
-                data.rsi.Current.Value > 0)
+                data.rsi.Current.Value > 0.3 and data.rsi.Current.Value < 0.65)
 
             if should_select:
                 selected.append(ff.Symbol)
+                
+
+        self.selected_securities = selected
 
         return selected
 
@@ -202,37 +212,47 @@ class CryingRedRhinoceros(QCAlgorithm):
         
         # return [x.Symbol for x in self.chosen]
 
+
     def Rebalance(self):
-        if self.Time.month != 1 and self.Time.month != 7:
+        if not (self.Time.month == 1 or self.Time.month == 7):
             return
+
         
-        self.Log('rebalancing!')
+        self.Log(f'rebalancing! {self.Time}')
 
-        self.Log('self.Portfolio')
-        for s in self.Portfolio.Keys:
-            self.Log(s)
+        # self.Log('self.Portfolio')
+        # for s in self.Portfolio.Keys:
+        #     self.Log(s)
 
-        self.Log('self.Securities')
-        for s in self.Securities.Keys:
-            self.Log(s)
+        # self.Log('self.Securities')
+        # for s in self.Securities.Keys:
+        #     self.Log(s)
 
-        self.Log('self.ActiveSecurities')
-        for s in self.ActiveSecurities:
-            self.Log(s)
+        # self.Log('self.ActiveSecurities')
+        # for s in self.ActiveSecurities:
+        #     self.Log(s)
 
-        # for symbol in self.ActiveSecurities:
-        #     self.Liquidate(symbol)
-        #     self.Log(f'was active: {symbol}')
+        # TODO: fix stuff below
 
-        # if len(self.UniverseSelection) > 0:
-        #     percentage = 1 / len(self.Securities)
-        #     for symbol in self.Securities:
-        #         self.SetHoldings(symbol, percentage)
+        invested = [security.Symbol for security in self.Portfolio.Values if security.Invested]
+        for symbol in invested:
+            self.Liquidate(symbol)
+            self.Log(f'liquidated: {symbol}')
 
-        #     self.Log('current securities:')
-        #     for s in self.Securities:
-        #         self.Log(f'{s}: {percentage}')
 
+
+
+        if self.selected_securities:
+            # get scores for stocks
+            scored_selection = []
+            for symbol in self.selected_securities:
+                scored_selection.append((symbol, self.ScoreStock(symbol)))
+
+
+            percentage = min(0.1, 1 / len(self.selected_securities))
+            for symbol in self.selected_securities:
+                self.SetHoldings(symbol, percentage)
+                self.Log(f'set holding for {symbol}: {percentage}')
 
     def AllocatePortfolio(self, selection: List[str]): # TODO: is selection: List[], also is selection ordered? no
         # second, assume selection is ordered? or like [(a, score_a), (b, score_b)]
@@ -248,15 +268,18 @@ class CryingRedRhinoceros(QCAlgorithm):
 
     def ScoreStock(self, stock) -> float:
         # given a stock return score between 0 and 1
+        # stock_data = ...
+
+
         pass
 
-    def OnSecuritiesChanged(self, changes: SecurityChanges):
-        for security in changes.RemovedSecurities:
-            self.selected_securities.remove(security)
+    # def OnSecuritiesChanged(self, changes: SecurityChanges):
+        # for security in changes.RemovedSecurities:
+        #     self.selected_securities.remove(security)
 
-        for security in changes.AddedSecurities:
-            self.SetHoldings(security.Symbol, 0.01)
-            self.selected_securities.append(security)
+        # for security in changes.AddedSecurities:
+        #     self.SetHoldings(security.Symbol, 0.01)
+            # self.selected_securities.append(security)
 
     def OnData(self, data: Slice):
         # if not self.Portfolio.Invested:
