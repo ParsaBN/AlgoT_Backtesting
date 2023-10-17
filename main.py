@@ -29,18 +29,22 @@ class Metric:
     reversed: bool = False
 
 METRICS = {
-    'price_earnings_ratio': Metric(lambda f, d: f.ValuationRatios.PERatio, 7.5, 25, reversed=True),
-    'growth': Metric(lambda f, d: f.AssetClassification.GrowthScore, 0.03, 1),
+    'price_earnings_ratio': Metric(lambda f, d: f.ValuationRatios.PERatio, 7.5, 20, reversed=True),
+    'growth': Metric(lambda f, d: f.AssetClassification.GrowthScore, 0.02, 1),
     'fast_slow_average_crossover': Metric(lambda f, d: (d.fast_average.Current.Value - d.slow_average.Current.Value) / d.slow_average.Current.Value, 0, 0.2),
     # 'relative_strength_index': Metric(lambda f, d: d.rsi.Current.Value, 7.5, 20),
 }
 
 class CryingRedRhinoceros(QCAlgorithm):
     def Initialize(self):
-        self.SetStartDate(2014, 1, 1)
+        self.SetStartDate(2013, 12, 30)
         self.SetEndDate(2015, 7, 1)
         self.SetCash(100000)
-        # self.SetWarmUp(200, Resolution.Daily)
+        self.SetWarmUp(1, Resolution.Daily)
+
+        # see: https://www.quantconnect.com/forum/discussion/8779/security-doesn-039-t-have-a-bar-of-data-trade-error-options-trading/p1
+        # something is still broken
+        # self.SetSecurityInitializer(lambda x: x.SetMarketPrice(self.GetLastKnownPrice(x)))
 
         self.symbol_data: Dict[Symbol, SymbolData] = {}
         self.selected_scores: Dict[Security, float] = {}
@@ -50,13 +54,8 @@ class CryingRedRhinoceros(QCAlgorithm):
 
         self.Schedule.On(self.DateRules.MonthStart(0), self.TimeRules.Midnight, self.Rebalance)
 
-        # self.are_trackers_initialised = False
-        # self.short_sma: Dict[Symbol, SimpleMovingAverage] = {}
-        # self.long_sma: Dict[Symbol, SimpleMovingAverage] = {}
-        # self.rsi: Dict[Symbol, RelativeStrengthIndex] = {}
-
     def CoarseSelectionFunction(self, coarse: List[CoarseFundamental]) -> List[Symbol]:
-        filtered = [x for x in coarse if x.HasFundamentalData][:10]
+        filtered = [x for x in coarse if x.HasFundamentalData][:100]
 
         for cf in filtered:
             if cf.Symbol not in self.symbol_data:
@@ -70,6 +69,7 @@ class CryingRedRhinoceros(QCAlgorithm):
     def FineSelectionFunction(self, fine: List[FineFundamental]) -> List[Symbol]:
         self.selected_scores = {}
         for ff in fine:
+            ff.Price
             data = self.symbol_data[ff.Symbol]
             score = self.ScoreStock(ff, data)
 
@@ -102,7 +102,7 @@ class CryingRedRhinoceros(QCAlgorithm):
             raw = (metric.get(fine, data) - metric.min) / (metric.max - metric.min)
 
             if metric.reversed:
-                raw *= -1
+                raw = 1 - raw
 
             if raw < 0:
                 return None
