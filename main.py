@@ -3,42 +3,7 @@ from datetime import datetime
 from AlgorithmImports import *
 from QuantConnect.Data.UniverseSelection import *
 from dataclasses import dataclass
-
-import QuantConnect.Data.UniverseSelection
 # endregion
-
-@dataclass
-class Metric:
-    # get: Callable[[FineFundamental], float]
-    name: str
-    min: float
-    max: float
-
-METRICS = {
-    'price_earnings_ratio': Metric('price_earnings_ratio', 7.5, 20)
-}
-    
-# METRICS = {
-#     'price_earnings_ratio': Metric(lambda x: x.ValuationRatios.PERatio, 15)
-# }
-
-# @dataclass
-# class StockMetrics:
-#     price_earnings_ratio: float
-#     earnings_growth_rate: float
-#     debt_equity_rato: float
-#     cash_flow: float
-
-#     def filter(self) -> bool:
-#         return (
-#             self.price_earnings_ratio < 15 and
-#             self.earnings_growth_rate > 0.15 and
-#             self.debt_equity_rato > 0 and # TODO: check
-#             self.cash_flow > 0
-#         )
-
-#     def score(self) -> float:
-#         return self.price_earnings_ratio
 
 class SymbolData(object):
     def __init__(self, symbol):
@@ -52,29 +17,33 @@ class SymbolData(object):
         return self.fast_average.IsReady and self.slow_average.IsReady and self.rsi.IsReady
 
     def update(self, time: datetime, value: float):
-        # if self.fast_average.Update(time, value) and self.slow_average.Update(time, value):
-        #     fast = self.fast_average.Current.Value
-        #     slow = self.slow_average.Current.Value
-        #     self.is_uptrend = fast > slow
-
         self.fast_average.Update(time, value)
         self.slow_average.Update(time, value)
         self.rsi.Update(time, value)
 
+@dataclass
+class Metric:
+    get: Callable[[FineFundamental, SymbolData], float]
+    min: float
+    max: float
+    reversed: bool = False
+
+METRICS = {
+    'price_earnings_ratio': Metric(lambda f, d: f.ValuationRatios.PERatio, 7.5, 25, reversed=True),
+    'growth': Metric(lambda f, d: f.AssetClassification.GrowthScore, 0.03, 1),
+    'fast_slow_average_crossover': Metric(lambda f, d: (d.fast_average.Current.Value - d.slow_average.Current.Value) / d.slow_average.Current.Value, 0, 0.2),
+    # 'relative_strength_index': Metric(lambda f, d: d.rsi.Current.Value, 7.5, 20),
+}
+
 class CryingRedRhinoceros(QCAlgorithm):
     def Initialize(self):
-        # self.stock_metrics: Dict[Symbol, StockMetrics] = {}
-
         self.SetStartDate(2014, 1, 1)
         self.SetEndDate(2015, 7, 1)
-        self.SetCash(50000)
+        self.SetCash(100000)
         # self.SetWarmUp(200, Resolution.Daily)
 
-        # self.AddEquity("AAPL")
-
         self.symbol_data: Dict[Symbol, SymbolData] = {}
-        self.selected_securities: List[Security] = []
-        # self.scored_selection: List[(Security, float)] = []
+        self.selected_scores: Dict[Security, float] = {}
 
         self.UniverseSettings.Resolution = Resolution.Daily
         self.AddUniverse(self.CoarseSelectionFunction, self.FineSelectionFunction)
@@ -89,32 +58,6 @@ class CryingRedRhinoceros(QCAlgorithm):
     def CoarseSelectionFunction(self, coarse: List[CoarseFundamental]) -> List[Symbol]:
         filtered = [x for x in coarse if x.HasFundamentalData][:10]
 
-        # sort descending by daily dollar volume
-        #sortedByDollarVolume = sorted(coarse, key=lambda x: x.DollarVolume, reverse=True)
-
-        # return the symbol objects of the top entries from our sorted collection
-        # sortedByDollarVolume = sorted(filtered_stocks, key=lambda x: x.DollarVolume, reverse=True) 
-        # top = sortedByDollarVolume[:self.__numberOfSymbols]
-        # for i in top:
-        #     self.AddEquity(i.Symbol, Resolution.Daily)
-
-        # return [i.Symbol for i in top]
-            # self.AddSecurity
-
-        # for x in filtered:
-        #     if not x.Symbol in self.ActiveSecurities:
-        #         self.AddSecurity(x.Symbol, Resolution.Daily) # TODO: finer resolution for stop loss?
-
-        #         self.short_sma[x.Symbol] = self.SMA(x.Symbol, 50, Resolution.Daily)
-        #         self.long_sma[x.Symbol] = self.SMA(x.Symbol, 200, Resolution.Daily)
-        #         self.rsi[x.Symbol] = self.RSI(x.Symbol, 14, MovingAverageType.Simple, Resolution.Daily)
-
-        #     # self.short_sma = { x: self.SMA(x.Symbol, 50, Resolution.Daily) for x in filtered }
-        #     # self.long_sma = { x: self.SMA(x.Symbol, 200, Resolution.Daily) for x in filtered }
-        #     # self.rsi = { x: self.RSI(x.Symbol, 14, MovingAverageType.Simple, Resolution.Daily) for x in filtered }
-
-        #     # self.are_trackers_initialised = True
-
         for cf in filtered:
             if cf.Symbol not in self.symbol_data:
                 self.symbol_data[cf.Symbol] = SymbolData(cf.Symbol)
@@ -125,166 +68,51 @@ class CryingRedRhinoceros(QCAlgorithm):
         return [x.Symbol for x in filtered]
 
     def FineSelectionFunction(self, fine: List[FineFundamental]) -> List[Symbol]:
-        # selected = [x.Symbol for x in fine if
-        #     x.ValuationRatios.PERatio < 15 and
-        #     x.AssetClassification.GrowthScore > 0.15 and
-        
-        #     self.short_sma[x.Symbol].IsReady and self.long_sma[x.Symbol].IsReady and
-        #     self.short_sma[x.Symbol].Current.Value > self.long_sma[x].Current.Value and 
-
-        #     self.rsi[x.Symbol].IsReady and
-        #     self.rsi[x.Symbol].Current.Value > 0
-        # ]
-
-        # if len(selected) > 0:
-        #     self.Log(len(selected))
-        #     self.Log(selected[0])
-
-        # return selected
-
-        selected = []
+        self.selected_scores = {}
         for ff in fine:
             data = self.symbol_data[ff.Symbol]
-            should_select = (data.is_ready() and
-                ff.ValuationRatios.PERatio < 20 and ff.ValuationRatios.PERatio > 7.5 and
-                ff.AssetClassification.GrowthScore > 0.035 and ff.AssetClassification.GrowthScore < 0.1 and # TODO: bit sus
-                data.fast_average.Current.Value > data.slow_average.Current.Value and
-                data.rsi.Current.Value > 0.3 and data.rsi.Current.Value < 0.65)
+            score = self.ScoreStock(ff, data)
 
-            if should_select:
-                selected.append(ff.Symbol)
+            if score is not None:
+                self.selected_scores[ff.Symbol] = score
                 
-
-        self.selected_securities = selected
-
-        return selected
-
-
-        # filtered_fine = [x for x in fine if x.ValuationRatios.PERatio 
-        #                     and x.FinancialStatements.BalanceSheet.Cash.OneMonth
-        #                     and x.FinancialStatements.BalanceSheet.CurrentLiabilities.OneMonth
-        #                     and x.FinancialStatements.CashFlowStatement.FreeCashFlow.OneMonth]
-        # sortedByfactor1 = sorted(filtered_fine, key=lambda x: x.ValuationRatios.PERatio, reverse=False)
-        # sortedByfactor2 = sorted(filtered_fine, key=lambda x: x.FinancialStatements.CashFlowStatement.FreeCashFlow.OneMonth, reverse=True)
-        # sortedByfactor3 = sorted(filtered_fine, key=lambda x: (x.FinancialStatements.BalanceSheet.Cash.OneMonth - x.FinancialStatements.BalanceSheet.CurrentLiabilities.OneMonth), reverse=True)
-        # sortedByfactor4 = sorted(filtered_fine, key=lambda x: self.RSI(x.Symbol, 14))
-        # self.Debug(f"STOCKS: {fine}")
-        
-        
-        # stock_dict = {}
-        
-        # #filtered_fine = [x for x in fine if x.ValuationRatios.PERatio]
-        # #sortedByfactor1 = sorted(filtered_fine, key=lambda x: x.ValuationRatios.PERatio, reverse=False)
-        # sortedByfactor4 = sorted(filtered_fine, key=lambda x: self.RSI(x.symbol, 14))
-        # num_stocks = len(filtered_fine)
-        # for i,ele in enumerate(sortedByfactor1):
-        #     rank1 = i
-        #     rank2 = sortedByfactor2.index(ele)
-        #     rank3 = sortedByfactor3.index(ele)
-        #     rank4 = sortedByfactor4.index(ele)
-        #     #score = [ceil(rank1/num_stocks)]
-        #     score = [ceil(rank1/num_stocks),
-        #             ceil(rank2/num_stocks),
-        #             ceil(rank3/num_stocks),
-        #             ceil(rank4/num_stocks)]
-        #     score = sum(score)
-        #     stock_dict[ele] = score
-        # self.sorted_stock = sorted(stock_dict.items(), key=lambda d:d[1],reverse=True)
-        # sorted_symbol = [self.sorted_stock[i][0] for i in range(len(self.sorted_stock))]
-        # topFine = sorted_symbol[:self.__numberOfSymbolsFine]
-        # self.chosen = []
-        # self.Debug(f"CHOSEN: {stock_dict}")
-        
-        # for stock in topFine:
-        #     # create a 15 day exponential moving average
-        #     fast = self.SMA(stock.Symbol, 50, Resolution.Daily);
-
-        #     # create a 30 day exponential moving average
-        #     slow = self.SMA(stock.Symbol, 200, Resolution.Daily);
-        #     if fast > slow:
-        #         self.rsi = self.RSI(stock.Symbol, 14)
-        #         if self.rsi < 30 and stock.Symbol not in self.Portfolio:
-        #             self.chosen.append(stock)
-        #         elif self.rsi >= 30 and self.rsi < 70 and stock.Symbol in self.Portfolio:
-        #             self.chosen.append(stock)
-        # self.Debug(f"TOP FINE: {topFine}")
-        # self.Debug(f"CHOSEN: {self.chosen}")
-        
-        # return [x.Symbol for x in self.chosen]
-
+        return list(self.selected_scores.keys())
 
     def Rebalance(self):
         if not (self.Time.month == 1 or self.Time.month == 7):
             return
 
-        
         self.Log(f'rebalancing! {self.Time}')
 
-        # self.Log('self.Portfolio')
-        # for s in self.Portfolio.Keys:
-        #     self.Log(s)
+        for security in self.Portfolio.Values:
+            if security.Invested:
+                self.Liquidate(security.Symbol)
+                # self.Log(f'liquidated: {symbol}')
 
-        # self.Log('self.Securities')
-        # for s in self.Securities.Keys:
-        #     self.Log(s)
+        if self.selected_scores:
+            total_score = sum(self.selected_scores.values())
 
-        # self.Log('self.ActiveSecurities')
-        # for s in self.ActiveSecurities:
-        #     self.Log(s)
+            for symbol, score in self.selected_scores.items():
+                self.SetHoldings(symbol, score / total_score)
+                self.Log(f'set holding for {symbol}: {score / total_score} (score: {score})')
 
-        # TODO: fix stuff below
+    def ScoreStock(self, fine: FineFundamental, data: SymbolData) -> Union[float, None]:
+        scores = {}
+        for name, metric in METRICS.items():
+            raw = (metric.get(fine, data) - metric.min) / (metric.max - metric.min)
 
-        invested = [security.Symbol for security in self.Portfolio.Values if security.Invested]
-        for symbol in invested:
-            self.Liquidate(symbol)
-            self.Log(f'liquidated: {symbol}')
+            if metric.reversed:
+                raw *= -1
 
+            if raw < 0:
+                return None
+            
+            scores[name] = min(raw, 1.0) # already clamped > 0
 
-
-
-        if self.selected_securities:
-            # get scores for stocks
-            scored_selection = []
-            for symbol in self.selected_securities:
-                scored_selection.append((symbol, self.ScoreStock(symbol)))
-
-
-            percentage = min(0.1, 1 / len(self.selected_securities))
-            for symbol in self.selected_securities:
-                self.SetHoldings(symbol, percentage)
-                self.Log(f'set holding for {symbol}: {percentage}')
-
-    def AllocatePortfolio(self, selection: List[str]): # TODO: is selection: List[], also is selection ordered? no
-        # second, assume selection is ordered? or like [(a, score_a), (b, score_b)]
-
-        # max allocation to one stock is 5-10%
-        # keep a dictionary of sectors and ensure total sector 
-
-        # liquidate everything
-        self.Liquidate()
-
-        for stock in selection[:10]:
-            self.SetHoldings(stock, 0.1)
-
-    def ScoreStock(self, stock) -> float:
-        # given a stock return score between 0 and 1
-        # stock_data = ...
-
-
-        pass
+        return sum(scores.values()) # FIXME: needs parameterised importance scaling
 
     # def OnSecuritiesChanged(self, changes: SecurityChanges):
-        # for security in changes.RemovedSecurities:
-        #     self.selected_securities.remove(security)
-
-        # for security in changes.AddedSecurities:
-        #     self.SetHoldings(security.Symbol, 0.01)
-            # self.selected_securities.append(security)
+    #     pass
 
     def OnData(self, data: Slice):
-        # if not self.Portfolio.Invested:
-        #     # self.SetHoldings("SPY", 0.33)
-        #     # self.SetHoldings("BND", 0.33)
-        #     self.SetHoldings("AAPL", 0.33)
-        
         pass
