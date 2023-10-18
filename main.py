@@ -5,12 +5,14 @@ from QuantConnect.Data.UniverseSelection import *
 from dataclasses import dataclass
 # endregion
 
+STOP_LOSS_FRACTION = 0.1
+
 class SymbolData(object):
-    def __init__(self, symbol):
-        self.symbol = symbol
+    def __init__(self, cf: CoarseFundamental):
         self.fast_average = SimpleMovingAverage(50)
         self.slow_average = SimpleMovingAverage(200)
         self.rsi = RelativeStrengthIndex(14)
+        self.price_ceiling = cf.AdjustedPrice
 
     def is_ready(self) -> bool:
         return self.fast_average.IsReady and self.slow_average.IsReady and self.rsi.IsReady
@@ -25,7 +27,7 @@ class Metric:
     get: Callable[[FineFundamental, SymbolData], float]
     min: float
     max: float
-    importance: float
+    weighting: float
     reversed: bool = False
     hard_min: bool = True
 
@@ -33,23 +35,33 @@ METRICS = {
     'price_earnings_ratio': Metric(
         lambda f, d: f.ValuationRatios.PERatio,
         min=7.5, max=20.0,
-        importance=1.5,
+        weighting=1.2,
         reversed=True
     ),
 
     'growth': Metric(
         lambda f, d: f.AssetClassification.GrowthScore,
         min=0.02, max=1.0,
-        importance=1.0
+        weighting=1.0
     ),
 
     'fast_slow_average_crossover': Metric(
         lambda f, d: (d.fast_average.Current.Value - d.slow_average.Current.Value) / d.slow_average.Current.Value,
         min=0.0, max=0.2,
-        importance=1.0
+        weighting=1.0
     ),
-    
-    # 'relative_strength_index': Metric(lambda f, d: d.rsi.Current.Value, 7.5, 20),
+
+    'free_cash_flow': Metric(
+        lambda f, d: f.FinancialStatements.CashFlowStatement.FreeCashFlow.SixMonths,
+        min=0.0, max=1.0,
+        weighting=0.0
+    ),
+
+    'relative_strength_index': Metric(
+        lambda f, d: d.rsi.Current.Value,
+        min=0.3, max=0.65,
+        weighting=1.0
+    ),
 }
 
 class CryingRedRhinoceros(QCAlgorithm):
@@ -64,7 +76,8 @@ class CryingRedRhinoceros(QCAlgorithm):
         # self.SetSecurityInitializer(lambda x: x.SetMarketPrice(self.GetLastKnownPrice(x)))
 
         self.symbol_data: Dict[Symbol, SymbolData] = {}
-        self.selected_scores: Dict[Security, float] = {}
+        self.selected_scores: Dict[Symbol, float] = {}
+        self.rebalance_requested = False
 
         self.UniverseSettings.Resolution = Resolution.Daily
         self.AddUniverse(self.CoarseSelection, self.FineSelection)
@@ -76,14 +89,20 @@ class CryingRedRhinoceros(QCAlgorithm):
 
         for cf in filtered:
             if cf.Symbol not in self.symbol_data:
-                self.symbol_data[cf.Symbol] = SymbolData(cf.Symbol)
+                self.symbol_data[cf.Symbol] = SymbolData(cf)
 
             data = self.symbol_data[cf.Symbol]
             data.update(cf.EndTime, cf.AdjustedPrice)
 
+        if not self.rebalance_requested:
+            return []
+        
         return [x.Symbol for x in filtered]
 
     def FineSelection(self, fine: List[FineFundamental]) -> List[Symbol]:
+        if not self.rebalance_requested:
+            return []
+
         self.selected_scores = {}
         for ff in fine:
             ff.Price
@@ -92,14 +111,22 @@ class CryingRedRhinoceros(QCAlgorithm):
 
             if score is not None:
                 self.selected_scores[ff.Symbol] = score
-                
+        
+        self.allocate_event = self.Schedule.On(self.DateRules.Tomorrow, self.TimeRules.Midnight, self.AllocatePortfolio)
         return list(self.selected_scores.keys())
 
     def Rebalance(self):
-        if not (self.Time.month == 1 or self.Time.month == 7):
-            return
+        if self.Time.month == 1 or self.Time.month == 7:
+            self.Log(f'rebalance requested! {self.Time}')
+            self.rebalance_requested = True
 
-        self.Log(f'rebalancing! {self.Time}')
+    def AllocatePortfolio(self):
+        if not self.allocate_event:
+            self.Error('this shouldnt have happened')
+            return
+        
+        self.Schedule.Remove(self.allocate_event)
+        self.Log(f'allocating new portfolio {self.Time}')
 
         for security in self.Portfolio.Values:
             if security.Invested:
@@ -111,6 +138,8 @@ class CryingRedRhinoceros(QCAlgorithm):
             for symbol, score in self.selected_scores.items():
                 self.SetHoldings(symbol, score / total_score)
                 self.Log(f'set holding for {symbol}: {score / total_score} (score: {score})')
+
+        self.rebalance_requested = False
 
     def CalculateScore(self, fine: FineFundamental, data: SymbolData) -> Union[float, None]:
         score = 0
@@ -124,12 +153,27 @@ class CryingRedRhinoceros(QCAlgorithm):
                 return None
             
             clamped = min(raw, 1.0) # already clamped > 0
-            score += clamped * metric.importance
+            score += clamped * metric.weighting
 
         return score # should we normalise 0 to 1?
 
-    # def OnSecuritiesChanged(self, changes: SecurityChanges):
-    #     pass
+    def OnData(self, slice: Slice):
+        self.HandleStopLosses(slice)
 
-    def OnData(self, data: Slice):
-        pass
+    def HandleStopLosses(self, slice: Slice):
+        to_remove = []
+        for symbol in self.selected_scores:
+            data = self.symbol_data[symbol]
+
+            if symbol in slice and slice[symbol]:
+                price = slice[symbol].Price
+
+                if price < data.price_ceiling * (1 - STOP_LOSS_FRACTION):
+                    self.Log(f'hit stop-loss! {symbol}')
+                    self.Liquidate(symbol)
+                    to_remove.append(symbol)
+                else:
+                    data.price_ceiling = max(data.price_ceiling, price)
+
+        for symbol in to_remove:
+            self.selected_scores.pop(symbol)
