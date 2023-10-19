@@ -1,8 +1,10 @@
 # region imports
 from datetime import datetime
+import math
 from AlgorithmImports import *
 from QuantConnect.Data.UniverseSelection import *
 from dataclasses import dataclass
+import pandas as pd
 # endregion
 
 STOP_LOSS_FRACTION = 0.1
@@ -79,6 +81,9 @@ class CryingRedRhinoceros(QCAlgorithm):
         self.selected_scores: Dict[Symbol, float] = {}
         self.rebalance_requested = False
 
+        self.metric_score_history = []
+        self.metric_raw_history = []
+
         self.UniverseSettings.Resolution = Resolution.Daily
         self.AddUniverse(self.CoarseSelection, self.FineSelection)
 
@@ -107,12 +112,12 @@ class CryingRedRhinoceros(QCAlgorithm):
         for ff in fine:
             ff.Price
             data = self.symbol_data[ff.Symbol]
-            score = self.CalculateScore(ff, data)
+            score = self.CalculateCombinedScore(ff, data)
 
             if score is not None:
                 self.selected_scores[ff.Symbol] = score
         
-        self.allocate_event = self.Schedule.On(self.DateRules.Tomorrow, self.TimeRules.Midnight, self.AllocatePortfolio)
+        self.allocation_event = self.Schedule.On(self.DateRules.Tomorrow, self.TimeRules.Midnight, self.AllocatePortfolio)
         return list(self.selected_scores.keys())
 
     def Rebalance(self):
@@ -121,11 +126,11 @@ class CryingRedRhinoceros(QCAlgorithm):
             self.rebalance_requested = True
 
     def AllocatePortfolio(self):
-        if not self.allocate_event:
+        if not self.allocation_event:
             self.Error('this shouldnt have happened')
             return
         
-        self.Schedule.Remove(self.allocate_event)
+        self.Schedule.Remove(self.allocation_event)
         self.Log(f'allocating new portfolio {self.Time}')
 
         for security in self.Portfolio.Values:
@@ -135,27 +140,45 @@ class CryingRedRhinoceros(QCAlgorithm):
         if self.selected_scores:
             total_score = sum(self.selected_scores.values())
 
+            self.Log(f'settings holdings for {len(self.selected_scores)} securities')
             for symbol, score in self.selected_scores.items():
                 self.SetHoldings(symbol, score / total_score)
-                self.Log(f'set holding for {symbol}: {score / total_score} (score: {score})')
+                # self.Log(f'set holding for {symbol}: {score / total_score} (score: {score})')
 
         self.rebalance_requested = False
 
-    def CalculateScore(self, fine: FineFundamental, data: SymbolData) -> Union[float, None]:
+    def CalculateCombinedScore(self, fine: FineFundamental, data: SymbolData) -> Union[float, None]:
+        metric_scores = self.CalculateMetricScores(fine, data)
+
         score = 0
-        for metric in METRICS.values():
-            raw = (metric.get(fine, data) - metric.min) / (metric.max - metric.min)
+        for name, value in metric_scores.items():
+            if math.isinf(value):
+                return None
+
+            score += value * METRICS[name].weighting
+
+        return score
+    
+    def CalculateMetricScores(self, fine: FineFundamental, data: SymbolData) -> Dict[str, float]:
+        scores = {}
+        raws = {}
+        for name, metric in METRICS.items():
+            raw = metric.get(fine, data)
+            raws[name] = raw
+
+            unclamped = (raw - metric.min) / (metric.max - metric.min)
 
             if metric.reversed:
-                raw = 1 - raw
+                unclamped = 1 - unclamped
 
-            if metric.hard_min and raw < 0:
-                return None
-            
-            clamped = min(raw, 1.0) # already clamped > 0
-            score += clamped * metric.weighting
+            if metric.hard_min and unclamped < 0:
+                unclamped = -math.inf
 
-        return score # should we normalise 0 to 1?
+            scores[name] = min(unclamped, 1.0)
+
+        self.metric_score_history.append(scores)
+        self.metric_raw_history.append(raws)
+        return scores
 
     def OnData(self, slice: Slice):
         self.HandleStopLosses(slice)
@@ -177,3 +200,31 @@ class CryingRedRhinoceros(QCAlgorithm):
 
         for symbol in to_remove:
             self.selected_scores.pop(symbol)
+
+    def OnEndOfAlgorithm(self):
+        # means = {}
+        # for key in METRICS.keys():
+        #     means[key] = sum(d[key] for d in self.metric_scores_history) / len(self.metric_scores_history)
+
+        # self.Log(f'metric means: {means}')
+
+        score_df = pd.DataFrame(self.metric_score_history)
+        score_df.replace(-math.inf, math.nan, inplace=True)
+        score_df.dropna(inplace=True)
+
+        self.Log('scores')
+        self.Log(f'mean: {score_df.mean(axis=0)}')
+        self.Log(f'median: {score_df.median(axis=0)}')
+        self.Log(f'std: {score_df.std(axis=0)}')
+
+        raws_df = pd.DataFrame(self.metric_raw_history)
+        raws_df.replace(-math.inf, math.nan, inplace=True)
+        raws_df.dropna(inplace=True)
+
+        self.Log('raw')
+        self.Log(f'mean: {raws_df.mean(axis=0)}')
+        self.Log(f'median: {raws_df.median(axis=0)}')
+        self.Log(f'std: {raws_df.std(axis=0)}')
+
+        # for _, row in df.iterrows():
+        #     self.Log(row.to_frame().T)
