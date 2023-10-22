@@ -207,7 +207,7 @@ class CryingRedRhinoceros(QCAlgorithm):
                     percentage_invested = (holding_value / total_portfolio_value)
 
                     self.Liquidate(symbol)
-                    self.SetHoldings('SPY', percentage_invested)
+                    self.SetHoldings('SPY', percentage_invested) # could limit if we want to
                     to_remove.append(symbol)
                 else:
                     data.price_ceiling = max(data.price_ceiling, price)
