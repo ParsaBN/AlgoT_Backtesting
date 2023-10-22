@@ -43,9 +43,15 @@ METRICS = {
         reversed=True
     ),
 
-    'growth': Metric(
-        lambda f, d: f.AssetClassification.GrowthScore,
-        min=0.02, max=1.0,
+    # 'growth': Metric(
+    #     lambda f, d: f.AssetClassification.GrowthScore,
+    #     min=0.02, max=1.0,
+    #     weighting=1.0
+    # ),
+
+    'price_to_book': Metric(
+        lambda f, d: f.ValuationRatios.PBRatio,
+        min=0.0, max=1.5,
         weighting=1.0
     ),
 
@@ -70,7 +76,7 @@ METRICS = {
 
 class CryingRedRhinoceros(QCAlgorithm):
     def Initialize(self):
-        self.SetStartDate(2008, 12, 30)
+        self.SetStartDate(2002, 12, 30)
         self.SetEndDate(2022, 12, 30)
         self.SetCash(100000)
         self.SetWarmUp(1, Resolution.Daily)
@@ -89,12 +95,12 @@ class CryingRedRhinoceros(QCAlgorithm):
 
         self.UniverseSettings.Resolution = Resolution.Daily
         self.AddUniverse(self.CoarseSelection, self.FineSelection)
-        self.AddEquity("SPY")
+        self.SPY =  self.AddEquity("SPY")
 
         self.Schedule.On(self.DateRules.MonthStart(0), self.TimeRules.Midnight, self.Rebalance)
 
     def CoarseSelection(self, coarse: List[CoarseFundamental]) -> List[Symbol]:
-        filtered = [x for x in coarse if x.HasFundamentalData][:100]
+        filtered = [x for x in coarse if x.HasFundamentalData]
 
         for cf in filtered:
             if cf.Symbol not in self.symbol_data:
@@ -217,15 +223,20 @@ class CryingRedRhinoceros(QCAlgorithm):
 
                     # Access the total portfolio value
                     total_portfolio_value = self.Portfolio.TotalPortfolioValue
-
                     # Access the security's holding value in the portfolio
                     holding_value = self.Portfolio[symbol].HoldingsValue
-
                     # Calculate the percentage of the portfolio invested in the security
                     percentage_invested = (holding_value / total_portfolio_value)
+                    
+                    # Access the security's holding value in the portfolio
+                    SPY_holding_value = self.Portfolio[self.SPY.Symbol].HoldingsValue
+                    # Calculate the percentage of the portfolio invested in the security
+                    SPY_percentage = (SPY_holding_value / total_portfolio_value)
 
                     self.Liquidate(symbol)
-                    self.SetHoldings('SPY', percentage_invested) # could limit if we want to
+
+
+                    self.SetHoldings('SPY', SPY_percentage + percentage_invested) # could limit if we want to
                     to_remove.append(symbol)
                 else:
                     data.price_ceiling = max(data.price_ceiling, price)
