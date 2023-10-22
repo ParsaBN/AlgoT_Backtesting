@@ -1,4 +1,5 @@
 # region imports
+from collections import defaultdict
 from datetime import datetime
 import math
 from AlgorithmImports import *
@@ -8,6 +9,7 @@ import pandas as pd
 # endregion
 
 STOP_LOSS_FRACTION = 0.1
+SECTOR_PROPORTION_MAX = 0.2
 
 class SymbolData(object):
     def __init__(self, cf: CoarseFundamental):
@@ -68,8 +70,8 @@ METRICS = {
 
 class CryingRedRhinoceros(QCAlgorithm):
     def Initialize(self):
-        self.SetStartDate(2013, 12, 30)
-        self.SetEndDate(2015, 7, 1)
+        self.SetStartDate(2005, 12, 30)
+        self.SetEndDate(2012, 7, 1)
         self.SetCash(100000)
         self.SetWarmUp(1, Resolution.Daily)
 
@@ -79,6 +81,7 @@ class CryingRedRhinoceros(QCAlgorithm):
 
         self.symbol_data: Dict[Symbol, SymbolData] = {}
         self.selected_scores: Dict[Symbol, float] = {}
+        self.selected_sectors: Dict[Symbol, str] = {}
         self.rebalance_requested = False
 
         self.metric_score_history = []
@@ -102,6 +105,8 @@ class CryingRedRhinoceros(QCAlgorithm):
         if not self.rebalance_requested:
             return []
         
+        self.Log(f'coarse len: {len(filtered)}')
+        
         return [x.Symbol for x in filtered]
 
     def FineSelection(self, fine: List[FineFundamental]) -> List[Symbol]:
@@ -109,13 +114,16 @@ class CryingRedRhinoceros(QCAlgorithm):
             return []
 
         self.selected_scores = {}
+        self.selected_sectors = {}
         for ff in fine:
-            ff.Price
             data = self.symbol_data[ff.Symbol]
             score = self.CalculateCombinedScore(ff, data)
 
             if score is not None:
                 self.selected_scores[ff.Symbol] = score
+                self.selected_sectors[ff.Symbol] = ff.CompanyReference.IndustryTemplateCode
+
+        self.Log(f'fine len: {len(self.selected_sectors)}')
         
         self.allocation_event = self.Schedule.On(self.DateRules.Tomorrow, self.TimeRules.Midnight, self.AllocatePortfolio)
         return list(self.selected_scores.keys())
@@ -139,10 +147,20 @@ class CryingRedRhinoceros(QCAlgorithm):
 
         if self.selected_scores:
             total_score = sum(self.selected_scores.values())
+            holdings = {symbol: score / total_score for symbol, score in self.selected_scores.items()}
+
+            sector_holdings = defaultdict(float)
+            for symbol, score in holdings.items():
+                sector_holdings[self.selected_sectors[symbol]] += score
+
+            sector_holdings_capped = {sector: min(proportion, SECTOR_PROPORTION_MAX) for sector, proportion in sector_holdings.items()}
+            sector_holdings_rebalanced = {sector: proportion / sum(sector_holdings_capped.values()) for sector, proportion in sector_holdings_capped.items()}
 
             self.Log(f'settings holdings for {len(self.selected_scores)} securities')
-            for symbol, score in self.selected_scores.items():
-                self.SetHoldings(symbol, score / total_score)
+            for symbol, holding in holdings.items():
+                sector = self.selected_sectors[symbol]
+                balanced_holding = holding * (sector_holdings_rebalanced[sector] / sector_holdings[sector])
+                self.SetHoldings(symbol, balanced_holding)
                 # self.Log(f'set holding for {symbol}: {score / total_score} (score: {score})')
 
         self.rebalance_requested = False
