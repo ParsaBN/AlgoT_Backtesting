@@ -70,8 +70,8 @@ METRICS = {
 
 class CryingRedRhinoceros(QCAlgorithm):
     def Initialize(self):
-        self.SetStartDate(2005, 12, 30)
-        self.SetEndDate(2012, 7, 1)
+        self.SetStartDate(2008, 12, 30)
+        self.SetEndDate(2022, 12, 30)
         self.SetCash(100000)
         self.SetWarmUp(1, Resolution.Daily)
 
@@ -89,6 +89,7 @@ class CryingRedRhinoceros(QCAlgorithm):
 
         self.UniverseSettings.Resolution = Resolution.Daily
         self.AddUniverse(self.CoarseSelection, self.FineSelection)
+        self.AddEquity("SPY")
 
         self.Schedule.On(self.DateRules.MonthStart(0), self.TimeRules.Midnight, self.Rebalance)
 
@@ -126,6 +127,7 @@ class CryingRedRhinoceros(QCAlgorithm):
         self.Log(f'fine len: {len(self.selected_sectors)}')
         
         self.allocation_event = self.Schedule.On(self.DateRules.Tomorrow, self.TimeRules.Midnight, self.AllocatePortfolio)
+        
         return list(self.selected_scores.keys())
 
     def Rebalance(self):
@@ -211,7 +213,19 @@ class CryingRedRhinoceros(QCAlgorithm):
 
                 if price < data.price_ceiling * (1 - STOP_LOSS_FRACTION):
                     self.Log(f'hit stop-loss! {symbol}')
+                    # symbol = self.Securities[symbol].Symbol 
+
+                    # Access the total portfolio value
+                    total_portfolio_value = self.Portfolio.TotalPortfolioValue
+
+                    # Access the security's holding value in the portfolio
+                    holding_value = self.Portfolio[symbol].HoldingsValue
+
+                    # Calculate the percentage of the portfolio invested in the security
+                    percentage_invested = (holding_value / total_portfolio_value)
+
                     self.Liquidate(symbol)
+                    self.SetHoldings('SPY', percentage_invested) # could limit if we want to
                     to_remove.append(symbol)
                 else:
                     data.price_ceiling = max(data.price_ceiling, price)
